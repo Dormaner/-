@@ -5,7 +5,10 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Play, RotateCcw, Pause, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Settings2 } from 'lucide-react';
+import { Trophy, Play, RotateCcw, Pause, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, LogOut, History } from 'lucide-react';
+import Auth from './components/Auth';
+import ScoreHistory from './components/ScoreHistory';
+import { UserToken, saveScore, getGlobalHighScores } from './lib/storage';
 
 // Constants
 const GRID_SIZE = 20;
@@ -21,6 +24,8 @@ const SPEED_INCREMENT = 2;
 type Point = { x: number; y: number };
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState<UserToken | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const [snake, setSnake] = useState<Point[]>(INITIAL_SNAKE);
   const [food, setFood] = useState<Point>({ x: 5, y: 5 });
   const [direction, setDirection] = useState<Point>(INITIAL_DIRECTION);
@@ -34,19 +39,18 @@ export default function App() {
   const gameLoopRef = useRef<number | null>(null);
   const lastUpdateTimeRef = useRef<number>(0);
 
-  // Load high score
   useEffect(() => {
-    const saved = localStorage.getItem('snake-high-score');
-    if (saved) setHighScore(parseInt(saved, 10));
-  }, []);
+    const refreshScores = async () => {
+      const globals = await getGlobalHighScores();
+      if (globals.length > 0) {
+        setHighScore(globals[0].score);
+      }
+    };
+    refreshScores();
+  }, [showHistory, isGameOver]); // Refresh high score when history is closed or game over
 
-  // Save high score
-  useEffect(() => {
-    if (score > highScore) {
-      setHighScore(score);
-      localStorage.setItem('snake-high-score', score.toString());
-    }
-  }, [score, highScore]);
+  // Save high score automatically handled on Game Over now, no longer as an effect.
+  // We'll leave the local highScore display update inside the Game Over block.
 
   const generateFood = useCallback((currentSnake: Point[]) => {
     let newFood: Point;
@@ -77,13 +81,30 @@ export default function App() {
     setSnake(prevSnake => {
       const head = prevSnake[0];
       const newHead = {
-        x: (head.x + direction.x + GRID_SIZE) % GRID_SIZE,
-        y: (head.y + direction.y + GRID_SIZE) % GRID_SIZE,
+        x: head.x + direction.x,
+        y: head.y + direction.y,
       };
+
+      // Check collision with walls
+      if (
+        newHead.x < 0 ||
+        newHead.x >= GRID_SIZE ||
+        newHead.y < 0 ||
+        newHead.y >= GRID_SIZE
+      ) {
+        setIsGameOver(true);
+        if (currentUser) {
+          saveScore(currentUser.username, score);
+        }
+        return prevSnake;
+      }
 
       // Check collision with self
       if (prevSnake.some(segment => segment.x === newHead.x && segment.y === newHead.y)) {
         setIsGameOver(true);
+        if (currentUser) {
+          saveScore(currentUser.username, score);
+        }
         return prevSnake;
       }
 
@@ -184,7 +205,7 @@ export default function App() {
     snake.forEach((segment, index) => {
       const isHead = index === 0;
       ctx.fillStyle = isHead ? '#10b981' : '#059669';
-      
+
       if (isHead) {
         ctx.shadowBlur = 10;
         ctx.shadowColor = '#10b981';
@@ -209,15 +230,22 @@ export default function App() {
       ctx.lineTo(x, y + r);
       ctx.quadraticCurveTo(x, y, x + r, y);
       ctx.fill();
-      
+
       ctx.shadowBlur = 0;
     });
   }, [snake, food]);
 
+  if (!currentUser) {
+    return <Auth onLogin={setCurrentUser} />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-[#050505] font-sans">
+      {showHistory && (
+        <ScoreHistory username={currentUser.username} onClose={() => setShowHistory(false)} />
+      )}
       {/* Header */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-[400px] flex justify-between items-end mb-8"
@@ -229,11 +257,28 @@ export default function App() {
           <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-mono">Precision Arcade v1.0</p>
         </div>
         <div className="flex flex-col items-end">
-          <div className="flex items-center gap-2 text-zinc-400 text-xs font-mono">
-            <Trophy size={12} className="text-amber-500" />
-            <span>BEST: {highScore}</span>
+          <div className="flex items-center gap-4 text-zinc-400 text-xs font-mono mb-2">
+            <div className="flex items-center gap-1">
+              <span className="text-emerald-500 font-bold">{currentUser.username}</span>
+            </div>
+            <button onClick={() => setShowHistory(true)} className="hover:text-white transition-colors flex items-center gap-1">
+              <History size={12} /> History
+            </button>
+            <button
+              onClick={() => {
+                setCurrentUser(null);
+                resetGame();
+              }}
+              className="hover:text-red-400 transition-colors flex items-center gap-1"
+            >
+              <LogOut size={12} /> Logout
+            </button>
           </div>
-          <div className="text-3xl font-display font-bold text-white">
+          <div className="flex items-center gap-2 text-zinc-400 text-xs font-mono justify-end w-full">
+            <Trophy size={12} className="text-amber-500" />
+            <span>GLOBAL BEST: {highScore < score ? score : highScore}</span>
+          </div>
+          <div className="text-3xl font-display font-bold text-white text-right w-full mt-1">
             {score.toString().padStart(4, '0')}
           </div>
         </div>
@@ -253,7 +298,7 @@ export default function App() {
           {/* Overlays */}
           <AnimatePresence>
             {(isPaused && !isGameOver) && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -272,7 +317,7 @@ export default function App() {
             )}
 
             {isGameOver && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="absolute inset-0 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
@@ -296,16 +341,16 @@ export default function App() {
             )}
           </AnimatePresence>
         </div>
-      </div>
+      </div >
 
       {/* Controls / Mobile UI */}
-      <div className="mt-8 w-full max-w-[400px] grid grid-cols-3 gap-4">
+      < div className="mt-8 w-full max-w-[400px] grid grid-cols-3 gap-4" >
         <div className="col-span-1 flex flex-col gap-2">
           <div className="p-3 bg-white/5 border border-white/10 rounded-xl">
             <p className="text-[10px] uppercase text-zinc-500 font-mono mb-1">Speed</p>
-            <p className="text-lg font-display font-bold text-emerald-500">{Math.round(1000/speed)}<span className="text-[10px] ml-1 opacity-50">TPS</span></p>
+            <p className="text-lg font-display font-bold text-emerald-500">{Math.round(1000 / speed)}<span className="text-[10px] ml-1 opacity-50">TPS</span></p>
           </div>
-          <button 
+          <button
             onClick={() => setIsPaused(p => !p)}
             className="p-3 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition-all"
           >
@@ -321,15 +366,15 @@ export default function App() {
           <ControlButton icon={<ChevronDown />} onClick={() => direction.y === 0 && setDirection({ x: 0, y: 1 })} />
           <ControlButton icon={<ChevronRight />} onClick={() => direction.x === 0 && setDirection({ x: 1, y: 0 })} />
         </div>
-      </div>
+      </div >
 
       {/* Footer Instructions */}
-      <div className="mt-8 text-center">
+      < div className="mt-8 text-center" >
         <p className="text-zinc-600 text-[10px] uppercase tracking-[0.3em] font-mono">
           Use Arrow Keys or On-Screen Controls
         </p>
-      </div>
-    </div>
+      </div >
+    </div >
   );
 }
 
